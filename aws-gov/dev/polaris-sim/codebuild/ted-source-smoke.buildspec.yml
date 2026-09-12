@@ -1,0 +1,101 @@
+version: 0.2
+env:
+  shell: bash
+phases:
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        export AWS_MAX_ATTEMPTS=1 LC_ALL=C
+        fail() { echo "SOURCE_IAM_SMOKE_FAILED: $*" >&2; exit 1; }
+        [ "${AWS_REGION:-${AWS_DEFAULT_REGION:-}}" = "us-gov-west-1" ] || fail "unexpected region"
+        for c in aws jq sha256sum git find sort diff stat grep timeout; do
+          command -v "$c" >/dev/null 2>&1 || fail "missing required tool: $c"
+        done
+        SMOKE_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/polaris-src-smoke.XXXXXX")" || fail "mktemp"
+        trap 'rm -rf "$SMOKE_TMP_DIR"' EXIT
+        ID_JSON="$(timeout 30 aws sts get-caller-identity --region us-gov-west-1 --output json)" || fail "sts get-caller-identity"
+        [ "$(jq -r '.Account' <<<"$ID_JSON")" = "393769260826" ] || fail "unexpected account"
+        ROLE_ARN="$(jq -r '.Arn' <<<"$ID_JSON")"
+        case "$ROLE_ARN" in
+          arn:aws-us-gov:sts::393769260826:assumed-role/mach-gnc-polaris-sim-codebuild/*) ;;
+          *) fail "unexpected principal: $ROLE_ARN" ;;
+        esac
+        ARCHIVE="$SMOKE_TMP_DIR/source.zip"
+        timeout 300 aws s3api get-object --region us-gov-west-1 \
+          --bucket mach-polaris-sim-artifacts \
+          --key codebuild-source/sha256/fd0fc8cfcdb33506a7fec17ed5d6a9d369110e3b4cdcb1f0397a54d2031c2fc1/source.zip \
+          --expected-bucket-owner 393769260826 \
+          "$ARCHIVE" >/dev/null || fail "s3 get-object"
+        [ "$(stat -c %s "$ARCHIVE")" -eq 34177106 ] || fail "archive size mismatch"
+        printf '%s  %s\n' fd0fc8cfcdb33506a7fec17ed5d6a9d369110e3b4cdcb1f0397a54d2031c2fc1 "$ARCHIVE" \
+          | sha256sum --check --strict --status || fail "archive sha256 mismatch"
+        SRC="$CODEBUILD_SRC_DIR"
+        MANIFEST="$SRC/source-manifest.json"
+        CHECKSUMS="$SRC/source.sha256"
+        CTX="$SRC/polaris/unreal"
+        [ -f "$MANIFEST" ] && [ -f "$CHECKSUMS" ] && [ -d "$CTX" ] || fail "extracted source layout"
+        [ ! -L "$MANIFEST" ] && [ ! -L "$CHECKSUMS" ] && [ ! -L "$CTX" ] || fail "source root symlink"
+        printf '%s  %s\n' fab6183638fabe4bb4980dac4441930ba116b9f2076006686356dcf749a6b0d4 "$MANIFEST" \
+          | sha256sum --check --strict --status || fail "source-manifest.json sha256 mismatch"
+        printf '%s  %s\n' 6c7f24b4fc625113172aa8629b5e2ed8a162c2e8819c68a4d3381189cd195662 "$CHECKSUMS" \
+          | sha256sum --check --strict --status || fail "source.sha256 sha256 mismatch"
+        jq -e '
+          .schema == "gnc-codebuild-source/v1" and
+          .repository == "machindustries/monorepo" and
+          .commit == "0e520ed60bc4d3ee52580988d2a9da2648e7de5d" and
+          .context_path == "polaris/unreal" and
+          .tree_sha == "21d1417642d300c825803f218b56083cfc19e867" and
+          (.files | type == "array" and length == 3935) and
+          ([.files[].size] | add == 73238204) and
+          ([.files[].path] | length == (unique | length)) and
+          all(.files[];
+            (.path | type == "string" and startswith("polaris/unreal/")) and
+            (.path | split("/") | all(. != ".." and . != "." and . != "")) and
+            (.path | explode | all(. != 9 and . != 10 and . != 13 and . != 92)) and
+            (.mode == "100644" or .mode == "100755") and
+            (.size | type == "number" and . >= 0) and
+            (.git_blob_sha | test("^[0-9a-f]{40}$")) and
+            (.sha256 | test("^[0-9a-f]{64}$"))
+          )' \
+          "$MANIFEST" >/dev/null || fail "manifest schema validation"
+        jq -r '.files[].path' "$MANIFEST" | sort > "$SMOKE_TMP_DIR/expected_paths"
+        jq -r '.files[] | "\(.path)\t\(.mode)"' "$MANIFEST" | sort > "$SMOKE_TMP_DIR/expected_modes"
+        jq -r '.files[] | "\(.sha256)  \(.path)"' "$MANIFEST" | sort > "$SMOKE_TMP_DIR/expected_sums"
+        (cd "$SRC" && find polaris/unreal -type f -print) | sort > "$SMOKE_TMP_DIR/actual_paths"
+        (cd "$SRC" && find polaris/unreal -type f -print | while IFS= read -r file; do printf '%s\t100%s\n' "$file" "$(stat -c %a "$file")"; done) | sort > "$SMOKE_TMP_DIR/actual_modes"
+        diff -u "$SMOKE_TMP_DIR/expected_paths" "$SMOKE_TMP_DIR/actual_paths" >/dev/null || fail "context file set mismatch"
+        diff -u "$SMOKE_TMP_DIR/expected_modes" "$SMOKE_TMP_DIR/actual_modes" >/dev/null || fail "context file mode mismatch"
+        [ "$(find "$CTX" -mindepth 1 ! -type f ! -type d | wc -l)" -eq 0 ] || fail "symlink or non-regular entry detected"
+        if grep -rIl -m1 '^version https://git-lfs' "$CTX" >/dev/null 2>&1; then
+          fail "LFS pointer header detected"
+        fi
+        [ "$(wc -l < "$CHECKSUMS")" -eq 3935 ] || fail "checksum list line count mismatch"
+        (cd "$SRC" && sha256sum --check --strict --quiet source.sha256) || fail "sha256sum content verification"
+        sort "$CHECKSUMS" > "$SMOKE_TMP_DIR/actual_sums"
+        diff -u "$SMOKE_TMP_DIR/expected_sums" "$SMOKE_TMP_DIR/actual_sums" >/dev/null || fail "checksum list does not match manifest"
+        DF="$CTX/Dockerfile.generate"
+        [ -f "$DF" ] || fail "Dockerfile missing from context"
+        printf '%s  %s\n' 248c18d184f707edd5426f184f41a1fd6a365700f66b47d0db758b8e1264f7cd "$DF" \
+          | sha256sum --check --strict --status || fail "Dockerfile sha256 mismatch"
+        jq -r '.files[] | "\(.git_blob_sha)\t\(.path)"' "$MANIFEST" | \
+          while IFS=$'\t' read -r blob path; do
+            [ "$(git hash-object --no-filters -- "$SRC/$path")" = "$blob" ] \
+              || fail "git blob sha mismatch: $path"
+          done
+        jq -n \
+          --arg codebuild_id "${CODEBUILD_BUILD_ID:-unknown}" \
+          --arg actual_role_arn "$ROLE_ARN" \
+          --arg archive_sha256 "fd0fc8cfcdb33506a7fec17ed5d6a9d369110e3b4cdcb1f0397a54d2031c2fc1" \
+          --arg manifest_sha256 "fab6183638fabe4bb4980dac4441930ba116b9f2076006686356dcf749a6b0d4" \
+          --arg checksum_sha256 "6c7f24b4fc625113172aa8629b5e2ed8a162c2e8819c68a4d3381189cd195662" \
+          --arg dockerfile_sha256 "248c18d184f707edd5426f184f41a1fd6a365700f66b47d0db758b8e1264f7cd" \
+          --arg source_scm "s3://mach-polaris-sim-artifacts/codebuild-source/sha256/fd0fc8cfcdb33506a7fec17ed5d6a9d369110e3b4cdcb1f0397a54d2031c2fc1/source.zip" \
+          --arg commit "0e520ed60bc4d3ee52580988d2a9da2648e7de5d" \
+          --arg tree_sha "21d1417642d300c825803f218b56083cfc19e867" \
+          '{event: "SOURCE_IAM_SMOKE_SUCCESS", account: "393769260826", region: "us-gov-west-1",
+            actual_role_arn: $actual_role_arn, codebuild_id: $codebuild_id, source_scm: $source_scm,
+            commit: $commit, tree_sha: $tree_sha, archive_sha256: $archive_sha256,
+            manifest_sha256: $manifest_sha256, checksum_sha256: $checksum_sha256,
+            dockerfile_sha256: $dockerfile_sha256, file_count: 3935, file_bytes: 73238204,
+            renderer_built: false, image_published: false, source_version_pinned: false}'
