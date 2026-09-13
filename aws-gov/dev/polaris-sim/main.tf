@@ -176,6 +176,12 @@ variable "receiver_ecr_repo_name" {
   default     = "mach-industries/polaris-unreal-receiver"
 }
 
+variable "polaris_base_ecr_repo_name" {
+  description = "Polaris cloud base image repository"
+  type        = string
+  default     = "mach-industries/polaris-cloud-base"
+}
+
 variable "ecr_keep_images" {
   description = "Untagged images beyond this count are expired; Unreal layers are big"
   type        = number
@@ -299,9 +305,10 @@ locals {
   # One repo per image. polaris-cloud runs BOTH polaris-strike and uxrce-agent — same
   # image, different command — so it is one repo serving two containers.
   ecr_repos = toset([
-    var.ecr_repo_name,          # mach-industries/mach-unreal            : renderer + PX4 SITL runtime
-    var.polaris_ecr_repo_name,  # mach-industries/polaris-cloud          : polaris-strike AND uxrce-agent
-    var.receiver_ecr_repo_name, # mach-industries/polaris-unreal-receiver : sim-image-receiver
+    var.ecr_repo_name,              # mach-industries/mach-unreal             : renderer + PX4 SITL runtime
+    var.polaris_ecr_repo_name,      # mach-industries/polaris-cloud           : polaris-strike AND uxrce-agent
+    var.receiver_ecr_repo_name,     # mach-industries/polaris-unreal-receiver : sim-image-receiver
+    var.polaris_base_ecr_repo_name, # mach-industries/polaris-cloud-base      : shared base image
   ])
 }
 
