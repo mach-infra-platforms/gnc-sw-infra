@@ -4,14 +4,19 @@ Quick-reference guide for GNC SW team members deploying and running workloads in
 AWS via Terraform. Worked example: the Polaris/Unreal cloud sim.
 
 Account GC-GNC-SW-Dev `393769260826`, region `us-gov-west-1`.
-Access: the `Mach-GNC-SW-Dev-Deploy` SSO role (build + deploy + run). The console
+Access: the `GNC-SW-Dev-Deploy` SSO role (build + deploy + run), provisioned
+2026-09-13 (generated role `AWSReservedSSO_GNC-SW-Dev-Deploy_60a7500d99af67b9`).
+The prior `Mach-GNC-SW-Dev-Deploy` identity was retired on 2026-09-13.
+The operator's normal-profile STS and Kubernetes reads passed after retirement.
+Use `GNC-SW-Dev-Deploy` for current access. The console
 is a read-only view; all changes go through this repo and the dispatch API.
 
 ## One-time
 
 1. `aws configure sso` →
    start URL `https://start.us-gov-west-1.us-gov-home.awsapps.com/directory/d-98677abeac`,
-   account `393769260826`, role `Mach-GNC-SW-Dev-Deploy`, region `us-gov-west-1`.
+   account `393769260826`, role `GNC-SW-Dev-Deploy` (provisioned 2026-09-13),
+   region `us-gov-west-1`.
    Profile name used below: `gnc-sw-dev`.
 2. `aws sso login --profile gnc-sw-dev` (browser auth; rerun when the session expires).
    **No access keys, ever.**
@@ -64,3 +69,9 @@ break-glass only; tell platform-eng first.
 | `10.73.106.0/24` | HQ Jetsons (bidi, all protocols for now) |
 
 Anything expecting internet at runtime will hang. Stage what the run needs.
+
+## Document History
+
+| Version | Date | Changes |
+| --- | --- | --- |
+| 1.0 | 2026-09-13 | Updated current access to the provisioned `GNC-SW-Dev-Deploy` daily role and recorded retirement of the prior identity with replacement assignments/access preserved. Historical dated evidence remains unchanged; no infrastructure or credential action is performed by this documentation update. |

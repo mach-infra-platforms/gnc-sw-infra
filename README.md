@@ -2,7 +2,9 @@
 
 GNC SW team infrastructure-as-code. Scoped deploy lane: everything in this repo
 applies within the boundary/deployer sandbox that platform engineering provisions
-(`Mach-GNC-SW-Dev-Deploy` permission set; IAM guarded by the `mach-gnc-*` boundary).
+(`GNC-SW-Dev-Deploy` permission set, provisioned 2026-09-13; the prior
+`Mach-GNC-SW-Dev-Deploy` identity was retired that day with replacement
+assignments and EKS access preserved; IAM guarded by the `mach-gnc-*` boundary).
 
 What lives here: GNC SW workload stacks (sim rigs, batch compute, app infra) for the
 GNC SW accounts. What does NOT live here: IAM roots, permission sets, boundaries,
@@ -55,3 +57,9 @@ No PATs, no shared tokens.
   (`mi-<workload>-<env>-<region>` / `mach-gnc-<workload>-<function>`).
 - `terraform fmt` + `terraform validate` before pushing.
 - Stop every dispatched run when it completes: `DELETE /runs/<id>`. An idle half-rig still bills a GPU.
+
+## Document History
+
+| Version | Date | Changes |
+| --- | --- | --- |
+| 1.0 | 2026-09-13 | Updated current access to the provisioned `GNC-SW-Dev-Deploy` daily role and recorded retirement of the prior identity with replacement assignments/access preserved. Historical dated evidence remains unchanged; no infrastructure or credential action is performed by this documentation update. |
