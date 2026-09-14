@@ -1,5 +1,6 @@
-# Ted CodeBuild source smoke. Existing role. Default: S3 zip source with no IAM,
-# ECR, buckets, or network creation — IAM lives in the access-request IAM config.
+# Ted daily native Unreal build. Default: pinned S3 source and full buildspec
+# on the existing role/project. Native apply follows the full-build success
+# decision; IAM, ECR, buckets and network remain owned by their existing configs.
 #
 # Optional fail-closed GitHub hosted-runner mode (default OFF): when
 # var.ted_github_runner_enabled is true AND a validated SECRETS_MANAGER source-auth
@@ -11,7 +12,7 @@
 # establish the actual Gov wiring at activation.
 
 variable "ted_github_runner_enabled" {
-  description = "Fail-closed switch for the optional GitHub hosted-runner mode. Default false preserves the existing S3 source smoke binding exactly."
+  description = "Fail-closed switch for the optional GitHub hosted-runner mode. Default false selects the pinned native S3 full build without GitHub source authentication."
   type        = bool
   default     = false
 }
@@ -32,8 +33,14 @@ locals {
   ted_project  = "mi-polaris-sim-dev-ore-build-mach-unreal"
   ted_role_arn = "arn:aws-us-gov:iam::393769260826:role/mach-gnc-polaris-sim-codebuild"
   ted_bucket   = "mach-polaris-sim-artifacts"
-  ted_key      = "codebuild-source/sha256/fd0fc8cfcdb33506a7fec17ed5d6a9d369110e3b4cdcb1f0397a54d2031c2fc1/source.zip"
-  ted_expected = "fd0fc8cfcdb33506a7fec17ed5d6a9d369110e3b4cdcb1f0397a54d2031c2fc1"
+  ted_key      = "codebuild-source/sha256/bc87384d9adb466daddc8384501b0ba49e7e94c80801804b2bbe6d9a4ab0906b/source.zip"
+  ted_expected = "bc87384d9adb466daddc8384501b0ba49e7e94c80801804b2bbe6d9a4ab0906b"
+
+  # Exact references from the native full-build request; never secret values.
+  ted_native_epic_environment = {
+    EPIC_GHCR_TOKEN = "arn:aws-us-gov:secretsmanager:us-gov-west-1:393769260826:secret:mi-polaris-sim/epic-ghcr-5QsAFr:token::038a28a4-26d9-497c-9694-916a50287539"
+    EPIC_GHCR_USER  = "arn:aws-us-gov:secretsmanager:us-gov-west-1:393769260826:secret:mi-polaris-sim/epic-ghcr-5QsAFr:username::038a28a4-26d9-497c-9694-916a50287539"
+  }
 }
 
 locals {
@@ -66,10 +73,8 @@ resource "aws_cloudwatch_log_group" "ted_smoke" {
 resource "aws_codebuild_project" "ted_smoke" {
   name         = local.ted_project
   service_role = local.ted_role_arn
-  # Disabled mode preserves the exact preimage values; enabled mode proposes the
-  # requester-specified Unreal targets (350-minute bound) pending native
-  # capacity/cost/Gov acceptance.
-  build_timeout  = var.ted_github_runner_enabled ? 350 : 20
+  # Same native full-build limits for S3 and optional GitHub execution.
+  build_timeout  = 350
   queued_timeout = 10
 
   artifacts {
@@ -77,13 +82,19 @@ resource "aws_codebuild_project" "ted_smoke" {
   }
 
   environment {
-    # Disabled mode preserves the exact preimage compute; enabled mode proposes
-    # COMPUTE_TYPE XLARGE with privileged Docker for the Docker-based Unreal build,
-    # pending native capacity/cost/Gov acceptance.
-    compute_type    = var.ted_github_runner_enabled ? "BUILD_GENERAL1_XLARGE" : "BUILD_GENERAL1_SMALL"
+    compute_type    = "BUILD_GENERAL1_XLARGE"
     image           = "aws/codebuild/amazonlinux-x86_64-standard:5.0"
     type            = "LINUX_CONTAINER"
-    privileged_mode = var.ted_github_runner_enabled
+    privileged_mode = true
+
+    dynamic "environment_variable" {
+      for_each = var.ted_github_runner_enabled ? {} : local.ted_native_epic_environment
+      content {
+        name  = environment_variable.key
+        type  = "SECRETS_MANAGER"
+        value = environment_variable.value
+      }
+    }
   }
 
   logs_config {
@@ -96,12 +107,11 @@ resource "aws_codebuild_project" "ted_smoke" {
   source {
     type      = local.ted_source_type
     location  = local.ted_source_location
-    buildspec = local.ted_source_type == "S3" ? file("${path.module}/codebuild/ted-source-smoke.buildspec.yml") : null
+    buildspec = local.ted_source_type == "S3" ? file("${path.module}/codebuild/ted-unreal-native.buildspec.yml") : null
 
-    # S3 smoke mode keeps the pinned sha256-addressed buildspec; the object is
-    # unversioned (AES256 SSE), so there is no S3 version id to pin or claim
-    # immutability against. WORKFLOW_JOB_QUEUED dispatch runs the workflow payload
-    # and supplies no inline buildspec.
+    # Native S3 mode binds the full archive and its 3943-file Git-blob manifest.
+    # GitHub mode uses the workflow payload and no inline buildspec. The prior
+    # ted-source-smoke.buildspec.yml remains retained for owned rollback.
     dynamic "auth" {
       for_each = var.ted_github_runner_enabled ? [1] : []
       content {
@@ -117,9 +127,10 @@ resource "aws_codebuild_project" "ted_smoke" {
     Purpose     = "polaris-sim"
   }
 
-  # Disabled S3 mode uses manual StartBuild and no webhook. Enabled GitHub mode
-  # uses the count-gated webhook below. Both modes omit vpc_config, secondary
-  # artifacts, secret environment variables, and source_version overrides.
+  # Native S3 mode supports ordinary StartBuild and has no webhook. Its Epic
+  # environment entries are version-pinned Secrets Manager references only.
+  # Optional GitHub mode retains its count-gated webhook and workflow secrets.
+  # Both modes omit vpc_config, secondary artifacts and source_version overrides.
 
   lifecycle {
     precondition {
