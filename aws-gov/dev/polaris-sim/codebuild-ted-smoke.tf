@@ -5,8 +5,10 @@
 # var.ted_github_runner_enabled is true AND a validated SECRETS_MANAGER source-auth
 # secret ARN is provided AND a trusted numeric ACTOR_ACCOUNT_ID cohort is listed, the
 # project source switches to https://github.com/machindustries/monorepo and a
-# WORKFLOW_JOB_QUEUED webhook is created. Public vendor docs do NOT prove Gov support
-# for WORKFLOW_JOB_QUEUED; live Gov verification is required before activation.
+# WORKFLOW_JOB_QUEUED webhook is created. Official CodeBuild docs document hosted
+# runners across CodeBuild regions, so no separate preactivation Gov feature probe
+# is required; native CreateWebhook success and WORKFLOW_JOB_QUEUED queue readback
+# establish the actual Gov wiring at activation.
 
 variable "ted_github_runner_enabled" {
   description = "Fail-closed switch for the optional GitHub hosted-runner mode. Default false preserves the existing S3 source smoke binding exactly."
@@ -146,8 +148,8 @@ resource "aws_codebuild_project" "ted_smoke" {
     }
 
     precondition {
-      condition     = !var.ted_github_runner_enabled || can(regex("^arn:aws-us-gov:secretsmanager:us-gov-west-1:393769260826:secret:.+$", var.ted_github_source_auth_secret_arn))
-      error_message = "GitHub runner mode requires the exact us-gov-west-1/393769260826 SECRETS_MANAGER source-auth ARN from the native Auth owner; activation is fail-closed."
+      condition     = !var.ted_github_runner_enabled || (can(regex("^arn:aws-us-gov:secretsmanager:us-gov-west-1:393769260826:secret:.+$", var.ted_github_source_auth_secret_arn)) && !can(regex("[*?]", var.ted_github_source_auth_secret_arn)))
+      error_message = "GitHub runner mode requires the exact us-gov-west-1/393769260826 SECRETS_MANAGER source-auth ARN from the native Auth owner, with no wildcards; activation is fail-closed."
     }
 
     precondition {
@@ -158,8 +160,9 @@ resource "aws_codebuild_project" "ted_smoke" {
 }
 
 # Optional WORKFLOW_JOB_QUEUED webhook, created only in enabled mode. Filter
-# semantics follow the pinned provider docs, but Gov WORKFLOW_JOB_QUEUED support
-# is unverified; native Gov verification is required before activation.
+# semantics follow the pinned provider docs; actual Gov wiring is proven by native
+# CreateWebhook success and a WORKFLOW_JOB_QUEUED queued-job readback, not by a
+# separate speculative capability probe.
 resource "aws_codebuild_webhook" "ted_smoke_github" {
   count = var.ted_github_runner_enabled ? 1 : 0
 
@@ -188,8 +191,8 @@ resource "aws_codebuild_webhook" "ted_smoke_github" {
 
   lifecycle {
     precondition {
-      condition     = can(regex("^arn:aws-us-gov:secretsmanager:us-gov-west-1:393769260826:secret:.+$", var.ted_github_source_auth_secret_arn))
-      error_message = "Webhook requires the exact us-gov-west-1/393769260826 SECRETS_MANAGER source-auth ARN from the native Auth owner."
+      condition     = can(regex("^arn:aws-us-gov:secretsmanager:us-gov-west-1:393769260826:secret:.+$", var.ted_github_source_auth_secret_arn)) && !can(regex("[*?]", var.ted_github_source_auth_secret_arn))
+      error_message = "Webhook requires the exact us-gov-west-1/393769260826 SECRETS_MANAGER source-auth ARN from the native Auth owner, with no wildcards."
     }
   }
 }
