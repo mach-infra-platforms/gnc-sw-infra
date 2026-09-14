@@ -1,13 +1,13 @@
-# CodeBuild-hosted runner for the existing Rig polaris-cloud workflow.
+# Optional CodeBuild-hosted runner for the existing Rig polaris-cloud workflow.
 # Its application and optional base image are built in ONE GitHub job; no
 # separate base-build project, role, ECR repository, secret or VPC is created.
 # Reuse the existing exact role and shared SourceAuth/actor inputs from
-# codebuild-ted-smoke.tf; both workflows use the accepted SourceAuth binding.
+# codebuild-ted-smoke.tf without changing that project's native S3 default.
 
 variable "polaris_cloud_github_runner_enabled" {
   description = "Enable the existing Rig polaris-cloud GitHub runner lane after exact SourceAuth, actor and native state bindings are accepted. Independent of the Unreal runner switch."
   type        = bool
-  default     = true
+  default     = false
 }
 
 locals {

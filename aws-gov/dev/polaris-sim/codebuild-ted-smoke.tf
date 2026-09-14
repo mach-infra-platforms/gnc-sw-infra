@@ -1,9 +1,8 @@
-# Ted daily Unreal build. Default: GitHub hosted-runner mode on the existing
-# role/project with the accepted SourceAuth reference and exact actor cohort.
-# Disable the switch for the retained pinned native S3 rollback configuration.
-# IAM, ECR, buckets and network remain owned by their existing configs.
+# Ted daily native Unreal build. Default: pinned S3 source and full buildspec
+# on the existing role/project. Native apply follows the full-build success
+# decision; IAM, ECR, buckets and network remain owned by their existing configs.
 #
-# Fail-closed GitHub hosted-runner mode (default ON): when
+# Optional fail-closed GitHub hosted-runner mode (default OFF): when
 # var.ted_github_runner_enabled is true AND a validated SECRETS_MANAGER source-auth
 # secret ARN is provided AND a trusted numeric ACTOR_ACCOUNT_ID cohort is listed, the
 # project source switches to https://github.com/machindustries/monorepo and a
@@ -13,21 +12,21 @@
 # establish the actual Gov wiring at activation.
 
 variable "ted_github_runner_enabled" {
-  description = "Fail-closed switch for GitHub hosted-runner mode. Default true selects the accepted GitHub source-auth binding; false restores the retained pinned native S3 full build."
+  description = "Fail-closed switch for the optional GitHub hosted-runner mode. Default false selects the pinned native S3 full build without GitHub source authentication."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "ted_github_source_auth_secret_arn" {
-  description = "Existing SECRETS_MANAGER secret ARN for GitHub source auth, provisioned by the native credential custodian. Reference only; never a token value and never a global ImportSourceCredentials."
+  description = "Existing SECRETS_MANAGER secret ARN for GitHub source auth, provisioned by the native Auth owner. Reference only; never a token value and never a global ImportSourceCredentials."
   type        = string
-  default     = "arn:aws-us-gov:secretsmanager:us-gov-west-1:393769260826:secret:mi-polaris-sim/codebuild/github-monorepo-778425058-VPNIlt"
+  default     = ""
 }
 
 variable "ted_github_webhook_actor_account_ids" {
   description = "Exact trusted numeric GitHub actor account IDs allowed to queue workflow jobs. Empty keeps the optional mode disabled (fail-closed)."
   type        = list(string)
-  default     = ["231075843", "61219106", "304655108"]
+  default     = []
 }
 
 locals {
@@ -161,7 +160,7 @@ resource "aws_codebuild_project" "ted_smoke" {
 
     precondition {
       condition     = !var.ted_github_runner_enabled || (can(regex("^arn:aws-us-gov:secretsmanager:us-gov-west-1:393769260826:secret:.+$", var.ted_github_source_auth_secret_arn)) && !can(regex("[*?]", var.ted_github_source_auth_secret_arn)))
-      error_message = "GitHub runner mode requires the exact us-gov-west-1/393769260826 SECRETS_MANAGER source-auth ARN from the native credential custodian, with no wildcards; activation is fail-closed."
+      error_message = "GitHub runner mode requires the exact us-gov-west-1/393769260826 SECRETS_MANAGER source-auth ARN from the native Auth owner, with no wildcards; activation is fail-closed."
     }
 
     precondition {
@@ -204,7 +203,7 @@ resource "aws_codebuild_webhook" "ted_smoke_github" {
   lifecycle {
     precondition {
       condition     = can(regex("^arn:aws-us-gov:secretsmanager:us-gov-west-1:393769260826:secret:.+$", var.ted_github_source_auth_secret_arn)) && !can(regex("[*?]", var.ted_github_source_auth_secret_arn))
-      error_message = "Webhook requires the exact us-gov-west-1/393769260826 SECRETS_MANAGER source-auth ARN from the native credential custodian, with no wildcards."
+      error_message = "Webhook requires the exact us-gov-west-1/393769260826 SECRETS_MANAGER source-auth ARN from the native Auth owner, with no wildcards."
     }
   }
 }

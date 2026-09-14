@@ -28,64 +28,38 @@ per root module, one TFC workspace per root, all in the TFC `GNC-SW` project.
 2. `terraform login` once (TFC token), then in a root dir: `terraform init && terraform plan`
 3. Plan before every apply. Do not apply a plan that contains unexplained changes.
 4. State is in Terraform Cloud (org MachIndustries, project GNC-SW) — never local, never committed.
-5. Keep infrastructure configuration in Terraform. Queue image builds through the existing GitHub workflows below.
+5. Keep infrastructure configuration in Terraform. Start the existing build project with the native flow below.
 
-## GitHub image builds: three steps
+## Native Unreal build: three steps
 
-The committed defaults select two CodeBuild-hosted GitHub runners in GovCloud
-account `393769260826`, `us-gov-west-1`. The native owner must apply those
-settings and verify both webhooks before the jobs can start. Source validation
-alone does not establish live runner wiring.
+Prerequisite: an existing `gnc-sw-dev` AWS profile for GovCloud account
+`393769260826` with the `GNC-SW-Dev-Deploy` role.
 
-1. Use an existing authorized GitHub account and select an approved monorepo
-   ref containing the workflow definitions. The retained workflow source is
-   `fix/gnc-codebuild-01a08e1a`, commit
-   `3d47094badaa90fb07322a2847b2b892ca88bed0`; it is separate from monorepo main.
-   The configured numeric actor cohort is Ted, Shynn and the registered GA
-   actor. Repository write permission and the webhook actor filter both apply.
-
-2. Queue the required workflow from that ref. The cloud application and
-   optional base image share one job and one cloud runner project.
+1. Sign in with the existing profile.
 
    ```sh
-   gh workflow run rig-mach-unreal-image.yaml --repo machindustries/monorepo \
-     --ref fix/gnc-codebuild-01a08e1a -f push=true
-
-   gh workflow run rig-polaris-cloud-image.yaml --repo machindustries/monorepo \
-     --ref fix/gnc-codebuild-01a08e1a -f build_base=false -f push=true
+   aws sso login --profile gnc-sw-dev
    ```
 
-   Set `build_base=true` only when the cloud base also needs rebuilding.
-   The workflow itself selects its exact CodeBuild project; no global runner
-   label or third base-build project is needed.
-
-3. Inspect the selected workflow's run and logs. Retain its source SHA, result
-   and published image digest.
+2. Start the configured project and retain its build ID. No overrides are needed.
 
    ```sh
-   gh run list --repo machindustries/monorepo \
-     --workflow rig-mach-unreal-image.yaml --limit 5
-   gh run list --repo machindustries/monorepo \
-     --workflow rig-polaris-cloud-image.yaml --limit 5
-   gh run view <run-id> --repo machindustries/monorepo --log
+   BUILD_ID=$(aws codebuild start-build --profile gnc-sw-dev --region us-gov-west-1 \
+     --project-name mi-polaris-sim-dev-ore-build-mach-unreal --query build.id --output text)
    ```
 
-[Unreal runner defaults](aws-gov/dev/polaris-sim/codebuild-ted-smoke.tf) and
-[cloud runner defaults](aws-gov/dev/polaris-sim/codebuild-polaris-cloud-runner.tf)
-share the native owner's exact Secrets Manager SourceAuth reference. It binds
-the operator-authorized existing GA GitHub credential to these two project source configurations;
-project scoping does not reduce the credential's underlying GitHub privileges.
-Token values never belong in Terraform or repository files.
+3. Check the result and open the returned log link. Repeat this read until the build completes.
 
-GitHub mode runs workflow commands and does not support the old ordinary
-`aws codebuild start-build` instructions as the daily workflow. The prior
-pinned S3 source snapshot `b950ac0852b224e542c70903f85708a720072212` and
-[full buildspec](aws-gov/dev/polaris-sim/codebuild/ted-unreal-native.buildspec.yml)
-remain available for an owner-managed rollback by disabling the Unreal runner
-switch. This does not automatically revert native state or remove webhooks.
+   ```sh
+   aws codebuild batch-get-builds --profile gnc-sw-dev --region us-gov-west-1 \
+     --ids "$BUILD_ID" --query 'builds[0].{status:buildStatus,phase:currentPhase,logs:logs.deepLink}'
+   ```
 
-The following image is historical evidence from that successful native S3
-build, not evidence that either GitHub runner has executed:
+The [project defaults](aws-gov/dev/polaris-sim/codebuild-ted-smoke.tf) use the
+fixed `b950ac0852b224e542c70903f85708a720072212` source snapshot and
+[full buildspec](aws-gov/dev/polaris-sim/codebuild/ted-unreal-native.buildspec.yml).
+This rebuilds that snapshot; it does not fetch the latest monorepo commit.
+The native AWS route is active. The optional GitHub runner/webhook remains unwired.
 
 Published `linux/amd64` image, verified on 2026-09-14:
 
@@ -107,11 +81,9 @@ validation only. Live Terraform plan/apply is disabled in that workflow; source
 validation does not deploy infrastructure. Infrastructure owners use reviewed,
 scoped native plans for authorized changes.
 
-Human AWS access uses SSO. CodeBuild uses its existing service role; GitHub
-source authentication uses the native owner's accepted Secrets Manager reference.
-GitHub workflow secrets supply Epic access in runner mode. The retained native
-S3 rollback mode uses version-pinned Epic Secrets Manager references. No
-credential value belongs in repository files or Terraform inputs.
+Human AWS access uses SSO. CodeBuild uses its existing service role and resolves
+version-pinned Epic credential references through Secrets Manager. No credential
+value belongs in repository files or Terraform inputs.
 
 ## Hygiene (non-negotiable)
 
@@ -126,5 +98,5 @@ credential value belongs in repository files or Terraform inputs.
 
 | Version | Date | Changes |
 | --- | --- | --- |
-| 1.1 | 2026-09-14 | Recorded the verified native Unreal image and retained its S3 rollback path; updated the daily flow to the two accepted GitHub runner source configurations and exact actor cohort, distinguished native activation from source validation, and preserved credential privilege/custody boundaries. |
+| 1.1 | 2026-09-14 | Added the verified native Unreal self-service steps and image digest, distinguished the fixed source snapshot from the unwired GitHub runner, and corrected the current validation-only CI description. |
 | 1.0 | 2026-09-13 | Updated current access to the provisioned `GNC-SW-Dev-Deploy` daily role and recorded retirement of the prior identity with replacement assignments/access preserved. Historical dated evidence remains unchanged; no infrastructure or credential action is performed by this documentation update. |
