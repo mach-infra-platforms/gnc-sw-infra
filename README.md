@@ -22,53 +22,53 @@ aws-gov/
 Growth: `aws-gov/prod/...`, `aws-commercial/dev/...` — same flat pattern, one dir
 per root module, one TFC workspace per root, all in the TFC `GNC-SW` project.
 
-## Workflow (see SW-TEAM-AWS-TERRAFORM-DEPLOYMENT-QRG.md for the quick-start)
+## Infrastructure changes
+
+See the [deployment quick reference](SW-TEAM-AWS-TERRAFORM-DEPLOYMENT-QRG.md) for setup and rig operations.
 
 1. `aws sso login --profile gnc-sw-dev` — SSO only, no static keys, no secrets in code
-2. `terraform login` once (TFC token), then in a root dir: `terraform init && terraform plan`
-3. Plan before every apply. Do not apply a plan that contains unexplained changes.
+2. Run `terraform login` once for Terraform Cloud, then `terraform init` in the intended root.
+3. Review a scoped plan with the existing workspace inputs before applying. Stop on unexplained changes.
 4. State is in Terraform Cloud (org MachIndustries, project GNC-SW) — never local, never committed.
-5. Keep infrastructure configuration in Terraform. Start the existing build project with the native flow below.
+5. Build images through the GitHub workflows below. Infrastructure owners use reviewed plans with the existing workspace inputs.
 
-## Native Unreal build: three steps
+## Build Unreal and Polaris images
 
-Prerequisite: an existing `gnc-sw-dev` AWS profile for GovCloud account
-`393769260826` with the `GNC-SW-Dev-Deploy` role.
+Prerequisite: GitHub CLI (`gh`) signed in with the approved GitHub account for
+`machindustries/monorepo`. Both workflows build the selected Ted branch revision
+on the existing GovCloud CodeBuild runners.
 
-1. Sign in with the existing profile.
-
-   ```sh
-   aws sso login --profile gnc-sw-dev
-   ```
-
-2. Start the configured project and retain its build ID. No overrides are needed.
+1. Dispatch the Unreal build and ECR publication.
 
    ```sh
-   BUILD_ID=$(aws codebuild start-build --profile gnc-sw-dev --region us-gov-west-1 \
-     --project-name mi-polaris-sim-dev-ore-build-mach-unreal --query build.id --output text)
+   gh workflow run rig-mach-unreal-image.yaml --repo machindustries/monorepo \
+     --ref users/tedzaremba/ue-cloud -f push=true
    ```
 
-3. Check the result and open the returned log link. Repeat this read until the build completes.
+2. Dispatch the Polaris application and base-image builds with ECR publication.
 
    ```sh
-   aws codebuild batch-get-builds --profile gnc-sw-dev --region us-gov-west-1 \
-     --ids "$BUILD_ID" --query 'builds[0].{status:buildStatus,phase:currentPhase,logs:logs.deepLink}'
+   gh workflow run rig-polaris-cloud-image.yaml --repo machindustries/monorepo \
+     --ref users/tedzaremba/ue-cloud -f build_base=true -f push=true
    ```
 
-The [project defaults](aws-gov/dev/polaris-sim/codebuild-ted-smoke.tf) use the
-fixed `b950ac0852b224e542c70903f85708a720072212` source snapshot and
-[full buildspec](aws-gov/dev/polaris-sim/codebuild/ted-unreal-native.buildspec.yml).
-This rebuilds that snapshot; it does not fetch the latest monorepo commit.
-The native AWS route is active. The optional GitHub runner/webhook remains unwired.
+3. Open the returned Actions run URLs to check build and push results, or list recent dispatches.
 
-Published `linux/amd64` image, verified on 2026-09-14:
+   ```sh
+   gh run list --repo machindustries/monorepo --branch users/tedzaremba/ue-cloud \
+     --event workflow_dispatch --limit 10
+   ```
 
-```text
-393769260826.dkr.ecr.us-gov-west-1.amazonaws.com/mach-industries/mach-unreal@sha256:5b6ebbe56ed41da83f0aa3784141ec9c9d09f99e230c218781b7e117a8a18e74
-```
+A successful dispatch only queues work. Confirm both runs succeed and record the
+published image tags and digests before deployment. GPU rendering requires a
+separate rig check. The rig also requires the separately supplied
+`polaris-unreal-receiver` image.
 
-Full cook, package, layout/CLI checks, and ECR push passed. GPU rendering remains
-unverified. Deploy by the recorded digest; `latest` is a mutable convenience tag.
+The [Unreal project](aws-gov/dev/polaris-sim/codebuild-ted-smoke.tf) retains a
+native S3 rollback that platform engineering can restore with a reviewed, scoped
+change. Only after restoring that mode can `aws codebuild start-build` run the
+fixed `b950ac0852b224e542c70903f85708a720072212` snapshot with the
+[native buildspec](aws-gov/dev/polaris-sim/codebuild/ted-unreal-native.buildspec.yml).
 
 ## Execution model
 
@@ -81,13 +81,17 @@ validation only. Live Terraform plan/apply is disabled in that workflow; source
 validation does not deploy infrastructure. Infrastructure owners use reviewed,
 scoped native plans for authorized changes.
 
-Human AWS access uses SSO. CodeBuild uses its existing service role and resolves
-version-pinned Epic credential references through Secrets Manager. No credential
-value belongs in repository files or Terraform inputs.
+Human AWS access uses the `GNC-SW-Dev-Deploy` SSO role. Both runners use the
+existing `mach-gnc-polaris-sim-codebuild` service role. CodeBuild resolves its
+scoped GitHub SourceAuth PAT from Secrets Manager reference
+`mi-polaris-sim/github-pat-UCrebm`; Unreal also receives the existing
+`mi-polaris-sim/epic-ghcr-5QsAFr` username and token fields. Repository checkout
+uses the job's `GITHUB_TOKEN`. Operators do not copy personal credentials into
+build settings, repository secrets, or Terraform inputs.
 
 ## Hygiene (non-negotiable)
 
-- No static AWS credentials anywhere. SSO for humans; OIDC for CI.
+- No static AWS credentials. Use SSO for human AWS access and the existing service role for CodeBuild.
 - No secrets in `.tf`, tfvars, or committed files.
 - IAM names stay inside `mach-gnc-*`; resource names follow the house contract
   (`mi-<workload>-<env>-<region>` / `mach-gnc-<workload>-<function>`).
@@ -98,5 +102,5 @@ value belongs in repository files or Terraform inputs.
 
 | Version | Date | Changes |
 | --- | --- | --- |
-| 1.1 | 2026-09-14 | Added the verified native Unreal self-service steps and image digest, distinguished the fixed source snapshot from the unwired GitHub runner, and corrected the current validation-only CI description. |
+| 1.1 | 2026-09-14 | Documented the two GitHub image-build dispatches, completion checks, service-role and Secrets Manager usage, retained the fixed-snapshot native path as rollback only, and clarified validation-only Terraform CI. |
 | 1.0 | 2026-09-13 | Updated current access to the provisioned `GNC-SW-Dev-Deploy` daily role and recorded retirement of the prior identity with replacement assignments/access preserved. Historical dated evidence remains unchanged; no infrastructure or credential action is performed by this documentation update. |

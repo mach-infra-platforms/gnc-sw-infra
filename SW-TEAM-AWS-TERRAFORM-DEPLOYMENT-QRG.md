@@ -8,8 +8,8 @@ Access: the `GNC-SW-Dev-Deploy` SSO role (build + deploy + run), provisioned
 2026-09-13 (generated role `AWSReservedSSO_GNC-SW-Dev-Deploy_60a7500d99af67b9`).
 The prior `Mach-GNC-SW-Dev-Deploy` identity was retired on 2026-09-13.
 The operator's normal-profile STS and Kubernetes reads passed after retirement.
-Use `GNC-SW-Dev-Deploy` for current access. The console
-is a read-only view; all changes go through this repo and the dispatch API.
+Use `GNC-SW-Dev-Deploy` for current access. Console and CLI operations share
+that role's scoped permissions; keep infrastructure changes in reviewed source.
 
 ## One-time
 
@@ -24,40 +24,63 @@ is a read-only view; all changes go through this repo and the dispatch API.
 
 ## Ship images (per code change)
 
-4. `aws ecr get-login-password --profile gnc-sw-dev | docker login --username AWS --password-stdin 393769260826.dkr.ecr.us-gov-west-1.amazonaws.com`
-5. Push all three:
-   - `393769260826.dkr.ecr.us-gov-west-1.amazonaws.com/mach-industries/mach-unreal`
-   - `393769260826.dkr.ecr.us-gov-west-1.amazonaws.com/mach-industries/polaris-cloud`
-   - `393769260826.dkr.ecr.us-gov-west-1.amazonaws.com/mach-industries/polaris-unreal-receiver`
-   Entrypoints must read `RUN_CONFIG` / `PX4_BUILD` / `RUN_ID` / `OUTPUT_PREFIX`.
+Use GitHub CLI signed in with the approved account for `machindustries/monorepo`.
+CodeBuild uses `mach-gnc-polaris-sim-codebuild` and resolves the scoped SourceAuth
+PAT and Unreal registry credentials from Secrets Manager; no personal credential
+copy is needed. See [credential references](README.md#execution-model).
+
+4. Dispatch Unreal on Ted's branch.
+
+   ```sh
+   gh workflow run rig-mach-unreal-image.yaml --repo machindustries/monorepo \
+     --ref users/tedzaremba/ue-cloud -f push=true
+   ```
+
+5. Dispatch the Polaris application and base-image builds on the same branch.
+
+   ```sh
+   gh workflow run rig-polaris-cloud-image.yaml --repo machindustries/monorepo \
+     --ref users/tedzaremba/ue-cloud -f build_base=true -f push=true
+   ```
+
+6. Check both runs and their push results in GitHub Actions before using the images.
+
+   ```sh
+   gh run list --repo machindustries/monorepo --branch users/tedzaremba/ue-cloud \
+     --event workflow_dispatch --limit 10
+   ```
+
+Record the successful runs' published tags and digests. A queued build does not
+establish a published image. Native `start-build` is reserved for an
+[owner-restored fixed-snapshot rollback](README.md#build-unreal-and-polaris-images).
 
 ## Fly a run
 
-6. Stage inputs to `s3://mach-polaris-sim-artifacts/` (`runs/inputs/*`, `builds/*`, `gis/*`).
-7. `POST /runs` (SigV4-signed) to `https://syqe5a1c2e.execute-api.us-gov-west-1.amazonaws.com`
+The rig also requires the separately supplied `polaris-unreal-receiver` image.
+
+7. Stage inputs to `s3://mach-polaris-sim-artifacts/` (`runs/inputs/*`, `builds/*`, `gis/*`).
+8. `POST /runs` (SigV4-signed) to `https://syqe5a1c2e.execute-api.us-gov-west-1.amazonaws.com`
    body: `{"run_config":"s3://…","px4_build":"s3://…","run_id":"<unique, ≤36 chars>"}`
    - First dispatch after idle: ~5–10 min (EC2 GPU cold start + image pull) — expected.
    - `GET /runs/<run_id>` to watch; both nodes place together or the pair is torn down.
-8. Results land in `s3://mach-polaris-sim-artifacts/runs/<run_id>/`.
-9. **`DELETE /runs/<run_id>` when done** — cluster scales back to zero; a forgotten
-   run bills two GPUs.
+9. Results land in `s3://mach-polaris-sim-artifacts/runs/<run_id>/`.
+10. **`DELETE /runs/<run_id>` when done** — cluster scales back to zero; a forgotten
+    run bills two GPUs.
 
 ## Change the infra
 
-State, locking, and RBAC live in TFC. Execution is LOCAL: TFC holds no AWS
-credentials and cannot start an apply. The normal path is CI: open a PR, review
-the posted plan, merge to `main`. CI applies with a repo-scoped OIDC role. No
-static keys. Local `terraform plan` stays the iteration tool. Local applies are
-break-glass only; tell platform-eng first.
+State, locking, and RBAC live in Terraform Cloud workspace
+`gc-as-gnc-sw-dev-polaris-sim` (MachIndustries, project GNC-SW). Execution is local;
+Terraform Cloud holds no AWS credentials. GitHub CI runs formatting and Terraform
+validation only. Merging source does not apply infrastructure.
 
-10. Edit under `aws-gov/dev/polaris-sim/`. Run `terraform plan` locally to
-    iterate. Open a PR. CI posts the plan as the `plan` check. Workspace: TFC
-    `gc-as-gnc-sw-dev-polaris-sim` (project GNC-SW).
-11. Review the CI plan. Merge to `main` after one approval. CI applies. Reserve
-    local `terraform apply` for break-glass, and tell platform-eng (Liem) first.
-12. Plan before every apply. If the plan shows an IAM denial or an unexplained
-    change, stop and contact platform-eng (Liem). The boundary denial is
-    intentional: it marks the edge of the deploy sandbox.
+11. Edit under `aws-gov/dev/polaris-sim/`, run `terraform fmt` and
+    `terraform validate`, and open a PR.
+12. Have the infrastructure owner review a scoped plan with the existing workspace
+    inputs before applying through the approved SSO role. Preserve unrelated inputs,
+    including bucket ownership settings.
+13. Stop on unexplained changes or IAM denials and contact platform engineering.
+    A boundary denial marks the edge of the deploy sandbox.
 
 ## Egress reality check (default-deny; these are the ONLY holes)
 
@@ -74,4 +97,5 @@ Anything expecting internet at runtime will hang. Stage what the run needs.
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 1.1 | 2026-09-14 | Added the two GitHub image-build dispatches and completion checks, identified the native path as rollback only, and corrected the validation-only CI and scoped infrastructure change steps. |
 | 1.0 | 2026-09-13 | Updated current access to the provisioned `GNC-SW-Dev-Deploy` daily role and recorded retirement of the prior identity with replacement assignments/access preserved. Historical dated evidence remains unchanged; no infrastructure or credential action is performed by this documentation update. |

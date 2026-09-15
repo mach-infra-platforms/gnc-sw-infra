@@ -1,32 +1,24 @@
-# Ted daily native Unreal build. Default: pinned S3 source and full buildspec
-# on the existing role/project. Native apply follows the full-build success
-# decision; IAM, ECR, buckets and network remain owned by their existing configs.
-#
-# Optional fail-closed GitHub hosted-runner mode (default OFF): when
-# var.ted_github_runner_enabled is true AND a validated SECRETS_MANAGER source-auth
-# secret ARN is provided AND a trusted numeric ACTOR_ACCOUNT_ID cohort is listed, the
-# project source switches to https://github.com/machindustries/monorepo and a
-# WORKFLOW_JOB_QUEUED webhook is created. Official CodeBuild docs document hosted
-# runners across CodeBuild regions, so no separate preactivation Gov feature probe
-# is required; native CreateWebhook success and WORKFLOW_JOB_QUEUED queue readback
-# establish the actual Gov wiring at activation.
+# Active GovCloud GitHub hosted runner, reconciled with the 2026-09-14
+# operator-authorized activation. Existing IAM, ECR, buckets and network stay
+# under their current owners. Setting ted_github_runner_enabled=false explicitly
+# selects the retained pinned S3 native-build rollback.
 
 variable "ted_github_runner_enabled" {
-  description = "Fail-closed switch for the optional GitHub hosted-runner mode. Default false selects the pinned native S3 full build without GitHub source authentication."
+  description = "Use the activated GitHub hosted runner. Explicit false selects the retained pinned native S3 rollback without GitHub source authentication."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "ted_github_source_auth_secret_arn" {
   description = "Existing SECRETS_MANAGER secret ARN for GitHub source auth, provisioned by the native Auth owner. Reference only; never a token value and never a global ImportSourceCredentials."
   type        = string
-  default     = ""
+  default     = "arn:aws-us-gov:secretsmanager:us-gov-west-1:393769260826:secret:mi-polaris-sim/github-pat-UCrebm"
 }
 
 variable "ted_github_webhook_actor_account_ids" {
-  description = "Exact trusted numeric GitHub actor account IDs allowed to queue workflow jobs. Empty keeps the optional mode disabled (fail-closed)."
+  description = "Exact trusted numeric GitHub actor account IDs accepted at activation; an empty cohort fails closed."
   type        = list(string)
-  default     = []
+  default     = ["231075843", "61219106", "294933999", "304655108"]
 }
 
 locals {
@@ -36,7 +28,13 @@ locals {
   ted_key      = "codebuild-source/sha256/bc87384d9adb466daddc8384501b0ba49e7e94c80801804b2bbe6d9a4ab0906b/source.zip"
   ted_expected = "bc87384d9adb466daddc8384501b0ba49e7e94c80801804b2bbe6d9a4ab0906b"
 
-  # Exact references from the native full-build request; never secret values.
+  # Existing Secrets Manager fields injected into the active GitHub runner.
+  ted_runner_epic_environment = {
+    EPIC_GHCR_TOKEN = "arn:aws-us-gov:secretsmanager:us-gov-west-1:393769260826:secret:mi-polaris-sim/epic-ghcr-5QsAFr:token"
+    EPIC_GHCR_USER  = "arn:aws-us-gov:secretsmanager:us-gov-west-1:393769260826:secret:mi-polaris-sim/epic-ghcr-5QsAFr:username"
+  }
+
+  # Exact references retained for the native full-build rollback; never values.
   ted_native_epic_environment = {
     EPIC_GHCR_TOKEN = "arn:aws-us-gov:secretsmanager:us-gov-west-1:393769260826:secret:mi-polaris-sim/epic-ghcr-5QsAFr:token::038a28a4-26d9-497c-9694-916a50287539"
     EPIC_GHCR_USER  = "arn:aws-us-gov:secretsmanager:us-gov-west-1:393769260826:secret:mi-polaris-sim/epic-ghcr-5QsAFr:username::038a28a4-26d9-497c-9694-916a50287539"
@@ -46,7 +44,7 @@ locals {
 locals {
   # Enabled-mode GitHub hosted-runner source (fail-closed; see variables above).
   ted_source_type           = var.ted_github_runner_enabled ? "GITHUB" : "S3"
-  ted_source_location       = var.ted_github_runner_enabled ? "https://github.com/machindustries/monorepo" : "${local.ted_bucket}/${local.ted_key}"
+  ted_source_location       = var.ted_github_runner_enabled ? "https://github.com/machindustries/monorepo.git" : "${local.ted_bucket}/${local.ted_key}"
   ted_workflow_name_pattern = "^Rig — mach-unreal Image [(]linux/amd64[)]$"
 }
 
@@ -71,24 +69,25 @@ resource "aws_cloudwatch_log_group" "ted_smoke" {
 }
 
 resource "aws_codebuild_project" "ted_smoke" {
-  name         = local.ted_project
-  service_role = local.ted_role_arn
-  # Same native full-build limits for S3 and optional GitHub execution.
-  build_timeout  = 350
-  queued_timeout = 10
+  name                   = local.ted_project
+  service_role           = local.ted_role_arn
+  build_timeout          = 350
+  queued_timeout         = 60
+  concurrent_build_limit = 1
 
   artifacts {
     type = "NO_ARTIFACTS"
   }
 
   environment {
-    compute_type    = "BUILD_GENERAL1_XLARGE"
-    image           = "aws/codebuild/amazonlinux-x86_64-standard:5.0"
-    type            = "LINUX_CONTAINER"
-    privileged_mode = true
+    compute_type                = "BUILD_GENERAL1_XLARGE"
+    image                       = "aws/codebuild/amazonlinux-x86_64-standard:5.0"
+    type                        = "LINUX_CONTAINER"
+    privileged_mode             = true
+    image_pull_credentials_type = "CODEBUILD"
 
     dynamic "environment_variable" {
-      for_each = var.ted_github_runner_enabled ? {} : local.ted_native_epic_environment
+      for_each = var.ted_github_runner_enabled ? local.ted_runner_epic_environment : local.ted_native_epic_environment
       content {
         name  = environment_variable.key
         type  = "SECRETS_MANAGER"
@@ -105,9 +104,10 @@ resource "aws_codebuild_project" "ted_smoke" {
   }
 
   source {
-    type      = local.ted_source_type
-    location  = local.ted_source_location
-    buildspec = local.ted_source_type == "S3" ? file("${path.module}/codebuild/ted-unreal-native.buildspec.yml") : null
+    type            = local.ted_source_type
+    location        = local.ted_source_location
+    buildspec       = local.ted_source_type == "S3" ? file("${path.module}/codebuild/ted-unreal-native.buildspec.yml") : null
+    git_clone_depth = var.ted_github_runner_enabled ? 1 : null
 
     # Native S3 mode binds the full archive and its 3943-file Git-blob manifest.
     # GitHub mode uses the workflow payload and no inline buildspec. The prior
@@ -127,9 +127,8 @@ resource "aws_codebuild_project" "ted_smoke" {
     Purpose     = "polaris-sim"
   }
 
-  # Native S3 mode supports ordinary StartBuild and has no webhook. Its Epic
-  # environment entries are version-pinned Secrets Manager references only.
-  # Optional GitHub mode retains its count-gated webhook and workflow secrets.
+  # Native S3 rollback supports ordinary StartBuild with its pinned Epic refs.
+  # GitHub mode keeps the accepted webhook and injects existing Epic secret fields.
   # Both modes omit vpc_config, secondary artifacts and source_version overrides.
 
   lifecycle {
@@ -170,10 +169,8 @@ resource "aws_codebuild_project" "ted_smoke" {
   }
 }
 
-# Optional WORKFLOW_JOB_QUEUED webhook, created only in enabled mode. Filter
-# semantics follow the pinned provider docs; actual Gov wiring is proven by native
-# CreateWebhook success and a WORKFLOW_JOB_QUEUED queued-job readback, not by a
-# separate speculative capability probe.
+# WORKFLOW_JOB_QUEUED webhook accepted during activation. Branch restrictions
+# belong to the workflow job guard; this event does not support HEAD_REF.
 resource "aws_codebuild_webhook" "ted_smoke_github" {
   count = var.ted_github_runner_enabled ? 1 : 0
 

@@ -1,13 +1,11 @@
-# Optional CodeBuild-hosted runner for the existing Rig polaris-cloud workflow.
-# Its application and optional base image are built in ONE GitHub job; no
-# separate base-build project, role, ECR repository, secret or VPC is created.
-# Reuse the existing exact role and shared SourceAuth/actor inputs from
-# codebuild-ted-smoke.tf without changing that project's native S3 default.
+# Active CodeBuild-hosted runner for the existing Rig polaris-cloud workflow.
+# The application and optional base image share one job and the existing role.
+# SourceAuth and actors reuse the accepted inputs in codebuild-ted-smoke.tf.
 
 variable "polaris_cloud_github_runner_enabled" {
-  description = "Enable the existing Rig polaris-cloud GitHub runner lane after exact SourceAuth, actor and native state bindings are accepted. Independent of the Unreal runner switch."
+  description = "Retain the activated Rig polaris-cloud GitHub runner lane. Independent of the Unreal runner switch."
   type        = bool
-  default     = false
+  default     = true
 }
 
 locals {
@@ -25,43 +23,40 @@ resource "aws_cloudwatch_log_group" "polaris_cloud_runner" {
 resource "aws_codebuild_project" "polaris_cloud_runner" {
   count = var.polaris_cloud_github_runner_enabled ? 1 : 0
 
-  name           = local.polaris_cloud_runner_project
-  service_role   = local.ted_role_arn
-  build_timeout  = 180
-  queued_timeout = 10
+  name                   = local.polaris_cloud_runner_project
+  description            = "Polaris cloud/base GitHub Actions runner in GNC GovCloud; source auth via approved scoped workload secret."
+  service_role           = local.ted_role_arn
+  build_timeout          = 180
+  queued_timeout         = 60
+  concurrent_build_limit = 1
 
   artifacts {
     type = "NO_ARTIFACTS"
   }
 
   environment {
-    compute_type    = "BUILD_GENERAL1_XLARGE"
-    image           = "aws/codebuild/amazonlinux-x86_64-standard:5.0"
-    type            = "LINUX_CONTAINER"
-    privileged_mode = true
+    compute_type                = "BUILD_GENERAL1_XLARGE"
+    image                       = "aws/codebuild/amazonlinux-x86_64-standard:5.0"
+    type                        = "LINUX_CONTAINER"
+    privileged_mode             = true
+    image_pull_credentials_type = "CODEBUILD"
   }
 
   logs_config {
     cloudwatch_logs {
-      group_name  = aws_cloudwatch_log_group.polaris_cloud_runner[0].name
-      stream_name = "github-runner"
+      group_name = aws_cloudwatch_log_group.polaris_cloud_runner[0].name
     }
   }
 
   source {
-    type     = "GITHUB"
-    location = "https://github.com/machindustries/monorepo"
+    type            = "GITHUB"
+    location        = "https://github.com/machindustries/monorepo.git"
+    git_clone_depth = 1
     # The GitHub job supplies commands; there is no native S3/inline buildspec.
     auth {
       type     = "SECRETS_MANAGER"
       resource = var.ted_github_source_auth_secret_arn
     }
-  }
-
-  tags = {
-    Name        = local.polaris_cloud_runner_project
-    Environment = "dev"
-    Purpose     = "polaris-sim"
   }
 
   lifecycle {
